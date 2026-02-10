@@ -4,6 +4,7 @@ import { getVideo, updateVideo } from "../db/videos";
 import type { ApiConfig } from "../config";
 import type { BunRequest } from "bun";
 import { BadRequestError, UserForbiddenError } from "./errors";
+import path from "path";
 
 export async function handlerUploadThumbnail(cfg: ApiConfig, req: BunRequest) {
   const { videoId } = req.params as { videoId?: string };
@@ -27,19 +28,24 @@ export async function handlerUploadThumbnail(cfg: ApiConfig, req: BunRequest) {
     throw new BadRequestError("Thumbnail is too large");
   }
 
-  const mediaType = thumbnail.type;
-
-  const imageArrayBuffer = await thumbnail.arrayBuffer();
-  const imageBuffer = Buffer.from(imageArrayBuffer);
-  const imageString = imageBuffer.toString("base64");
   const videoMetaData = getVideo(cfg.db, videoId);
-  const dataURL = `data:${mediaType};base64,${imageString}`;
 
   if (videoMetaData?.userID !== userID) {
     throw new UserForbiddenError("Video does not belong to this user");
   }
 
-  const newVideo = { ...videoMetaData, thumbnailURL: dataURL };
+  const imageArrayBuffer = await thumbnail.arrayBuffer();
+  const imageBuffer = Buffer.from(imageArrayBuffer);
+  const mediaType = thumbnail.type;
+
+  const filename = `${videoMetaData.id}.${mediaType}`;
+  const filepath = path.join(cfg.assetsRoot, "/", filename);
+
+  Bun.write(filepath, imageBuffer);
+
+  const thumbnailURL = `http://localhost:${cfg.port}/assets/${filename}`;
+
+  const newVideo = { ...videoMetaData, thumbnailURL };
 
   updateVideo(cfg.db, newVideo);
 
