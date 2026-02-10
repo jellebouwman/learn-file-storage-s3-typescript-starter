@@ -22,6 +22,13 @@ export async function handlerUploadThumbnail(cfg: ApiConfig, req: BunRequest) {
     throw new BadRequestError("Thumbnail is not a file");
   }
 
+  const allowedMimeTypes = ["image/jpeg", "image/png"];
+  if (!allowedMimeTypes.includes(thumbnail.type)) {
+    throw new BadRequestError(
+      "Incorrect mime type, only accepting image/jpeg and image/png",
+    );
+  }
+
   const MAX_UPLOAD_SIZE = 10 << 20;
 
   if (thumbnail.size > MAX_UPLOAD_SIZE) {
