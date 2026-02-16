@@ -54,13 +54,15 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
 
   await Bun.write(filepath, videoBuffer);
 
+  const videoOrientation = await getVideoOrientation(filepath);
+
   await cfg.s3Client
-    .file(filename, { bucket: cfg.s3Bucket })
+    .file(`${videoOrientation}/${filename}`, { bucket: cfg.s3Bucket })
     .write(Bun.file(filepath), { type: video.type });
 
   const newVideo = {
     ...videoMetaData,
-    videoURL: `https://${cfg.s3Bucket}.s3.${cfg.s3Region}.amazonaws.com/${filename}`,
+    videoURL: `https://${cfg.s3Bucket}.s3.${cfg.s3Region}.amazonaws.com/${videoOrientation}/${filename}`,
   };
 
   updateVideo(cfg.db, newVideo);
@@ -68,4 +70,65 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
   await Bun.file(filepath).delete();
 
   return respondWithJSON(200, newVideo);
+}
+
+type VideoOrientation = "landscape" | "portrait" | "other";
+const FFPROBE_COMMAND = [
+  "ffprobe",
+  "-v",
+  "error",
+  "-print_format",
+  "json",
+  "-show_streams",
+];
+
+async function getVideoOrientation(
+  filepath: string,
+): Promise<VideoOrientation> {
+  const proc = Bun.spawn([...FFPROBE_COMMAND, filepath], {
+    stderr: "pipe",
+    stdout: "pipe",
+  });
+
+  const stdoutText = await new Response(proc.stdout).text();
+  const stderrText = await new Response(proc.stderr).text();
+
+  const exited = await proc.exited;
+
+  if (exited !== 0) {
+    throw new Error(stderrText);
+  }
+
+  const probeData = JSON.parse(stdoutText);
+  const firstStream = probeData?.streams?.[0];
+
+  if (firstStream === undefined) {
+    throw new Error(`Stream is not defined: ${JSON.stringify(probeData)}`);
+  }
+
+  const { width, height } = firstStream;
+
+  if (typeof width !== "number") {
+    throw new Error(`Width is not a number but: ${typeof width}`);
+  }
+  if (typeof height !== "number") {
+    throw new Error(`Height is not a number but: ${typeof height}`);
+  }
+
+  return getVideoOrientationFromDimensions(width, height);
+}
+
+function getVideoOrientationFromDimensions(
+  width: number,
+  height: number,
+): VideoOrientation {
+  const ratio = width / height;
+  const tolerance = 0.05;
+
+  if (Math.abs(ratio - 16 / 9) <= tolerance) {
+    return "landscape";
+  } else if (Math.abs(ratio - 9 / 16) <= tolerance) {
+    return "portrait";
+  }
+  return "other";
 }
