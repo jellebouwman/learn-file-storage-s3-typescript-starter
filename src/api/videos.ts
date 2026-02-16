@@ -4,7 +4,7 @@ import { type ApiConfig } from "../config";
 import { S3Client, type BunRequest } from "bun";
 import { BadRequestError, NotFoundError, UserForbiddenError } from "./errors";
 import { getBearerToken, validateJWT } from "../auth";
-import { getVideo, updateVideo } from "../db/videos";
+import { getVideo, updateVideo, type Video } from "../db/videos";
 import path from "path";
 import { randomBytes } from "crypto";
 
@@ -56,20 +56,24 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
 
   const videoOrientation = await getVideoOrientation(filepath);
 
+  const processedFilePath = await processVideoForFastStart(filepath);
+
   await cfg.s3Client
     .file(`${videoOrientation}/${filename}`, { bucket: cfg.s3Bucket })
-    .write(Bun.file(filepath), { type: video.type });
+    .write(Bun.file(processedFilePath), { type: video.type });
 
   const newVideo = {
     ...videoMetaData,
-    videoURL: `https://${cfg.s3Bucket}.s3.${cfg.s3Region}.amazonaws.com/${videoOrientation}/${filename}`,
+    // videoURL: `https://${cfg.s3Bucket}.s3.${cfg.s3Region}.amazonaws.com/${videoOrientation}/${filename}`,
+    videoURL: `${videoOrientation}/${filename}`,
   };
 
   updateVideo(cfg.db, newVideo);
 
   await Bun.file(filepath).delete();
+  await Bun.file(processedFilePath).delete();
 
-  return respondWithJSON(200, newVideo);
+  return respondWithJSON(200, dbVideoToSignedVideo(cfg, newVideo));
 }
 
 type VideoOrientation = "landscape" | "portrait" | "other";
@@ -131,4 +135,53 @@ function getVideoOrientationFromDimensions(
     return "portrait";
   }
   return "other";
+}
+
+async function processVideoForFastStart(
+  inputFilePath: string,
+): Promise<string> {
+  const outputFilePath = `${inputFilePath}.processed`;
+
+  const proc = Bun.spawn(
+    [
+      "ffmpeg",
+      "-i",
+      inputFilePath,
+      "-movflags",
+      "faststart",
+      "-map_metadata",
+      "0",
+      "-codec",
+      "copy",
+      "-f",
+      "mp4",
+      outputFilePath,
+    ],
+    {
+      stderr: "pipe",
+    },
+  );
+
+  const exitCode = await proc.exited;
+
+  if (exitCode !== 0) {
+    const errMsg = await new Response(proc.stderr).text();
+    throw new Error(`ffmpeg failed: ${errMsg}`);
+  }
+
+  return outputFilePath;
+}
+
+function generatePresignedURL(cfg: ApiConfig, key: string, expireTime: number) {
+  return cfg.s3Client.presign(key, { expiresIn: expireTime });
+}
+
+export function dbVideoToSignedVideo(cfg: ApiConfig, video: Video): Video {
+  if (!video.videoURL) {
+    return video;
+  }
+  console.log({ video });
+  const presignedUrl = generatePresignedURL(cfg, video.videoURL, 10000);
+
+  return { ...video, videoURL: presignedUrl };
 }
